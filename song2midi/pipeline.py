@@ -29,10 +29,29 @@ def build_transcriber(key: str, budget: DeviceBudget | None = None) -> Transcrib
     Imports are local so a run that uses one transcriber does not pay for the
     others' import time.
     """
+    device = budget.device if budget else "cpu"
+
     if key == "polyphonic":
         from song2midi.transcription.polyphonic import PolyphonicTranscriber
 
         return PolyphonicTranscriber()
+    if key == "vocals":
+        from song2midi.transcription.monophonic import MonophonicTranscriber
+
+        # crepe handles the wide range and inharmonic timbre of a voice better
+        # than pyin does.
+        return MonophonicTranscriber(
+            fmin=80.0, fmax=1100.0, backend="crepe", device=device
+        )
+    if key == "bass":
+        from song2midi.transcription.monophonic import MonophonicTranscriber
+
+        # pyin needs no model and is precise in the low register.
+        return MonophonicTranscriber(fmin=30.0, fmax=400.0, backend="pyin")
+    if key == "drums":
+        from song2midi.transcription.drums import DrumTranscriber
+
+        return DrumTranscriber()
     raise ValueError(f"Unknown transcriber key: {key}")
 
 

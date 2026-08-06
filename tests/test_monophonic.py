@@ -5,6 +5,7 @@ from song2midi.transcription.monophonic import (
     MonophonicTranscriber,
     hz_to_midi_float,
     notes_from_f0,
+    pyin_frame_length,
 )
 
 HOP = 0.01
@@ -24,6 +25,35 @@ def test_hz_to_midi_float_maps_a440_to_69():
 
 def test_hz_to_midi_float_marks_non_positive_as_nan():
     assert np.isnan(hz_to_midi_float(np.array([0.0, -1.0]))).all()
+
+
+@pytest.mark.parametrize("fmin", [30.0, 41.2, 80.0, 200.0])
+def test_pyin_frame_holds_two_periods_of_fmin(fmin):
+    """Below two periods pyin's estimates fall apart, which is what left the
+    bass track nearly empty when the frame length was hardcoded to 2048."""
+    frame_length = pyin_frame_length(fmin, 44100)
+    assert frame_length >= 2 * 44100 / fmin
+    assert frame_length & (frame_length - 1) == 0  # power of two, for the FFT
+
+
+def test_pyin_frame_never_goes_below_the_default():
+    assert pyin_frame_length(2000.0, 44100) == 2048
+
+
+@pytest.mark.slow
+def test_pyin_backend_finds_a_low_bass_note():
+    sr = 44100
+    t = np.arange(int(sr * 2)) / sr
+    # E1 = 41.2 Hz, MIDI 28 — the lowest note on a 4-string bass.
+    mono = 0.5 * sum(np.sin(2 * np.pi * 41.203 * h * t) / h for h in (1, 2, 3))
+    audio = np.stack([mono, mono]).astype(np.float32)
+
+    notes = MonophonicTranscriber(fmin=30.0, fmax=400.0, backend="pyin").transcribe(
+        audio, sr
+    )
+
+    assert notes, "bass note not detected"
+    assert max(notes, key=lambda n: n.duration).pitch == 28
 
 
 def test_steady_pitch_becomes_one_note():

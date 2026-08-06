@@ -34,24 +34,51 @@ CRASH_DECAY_THRESHOLD = 0.3
 N_FFT = 2048
 MIN_ATTACK_SAMPLES = 16
 
+# How much a band must outweigh its neighbours to name the instrument. Measured
+# on synthetic hits: kicks come in at 3800-37000x low-over-mid, hi-hats at
+# 394-5190x high-over-mid, and broadband snares never exceed 2.4x in any
+# direction. Anything between those worlds is a snare, which is also the safest
+# thing to be wrong about — it sits in the middle of the kit.
+DOMINANCE_RATIO = 4.0
+
 
 def band_energy(spectrum: NDArray, freqs: NDArray, band: tuple[float, float]) -> float:
+    """Mean energy per bin in a band — a density, not a sum.
+
+    The bands have wildly different widths (the high band spans 10 kHz, the mid
+    band 650 Hz). Summing means broadband content always looks like it lives in
+    the high band, which sent every snare to the crash cymbal.
+    """
     low, high = band
     mask = (freqs >= low) & (freqs < high)
-    return float(np.sum(spectrum[mask] ** 2))
+    if not mask.any():
+        return 0.0
+    return float(np.mean(spectrum[mask] ** 2))
 
 
 def classify_onset(spectrum: NDArray, freqs: NDArray, decay_ratio: float) -> int:
-    """Map one onset's spectrum to a General MIDI drum note."""
+    """Map one onset's spectrum to a General MIDI drum note.
+
+    Kicks and cymbals are recognised by one band *dominating* the others, not
+    merely exceeding them: a snare is broadband, so "high beats mid" alone sends
+    every snare to the crash. Snare is the fallthrough, and it is also the
+    safest classification to get wrong — it sits in the middle of the kit.
+    """
     low = band_energy(spectrum, freqs, LOW_BAND)
     mid = band_energy(spectrum, freqs, MID_BAND)
     high = band_energy(spectrum, freqs, HIGH_BAND)
 
-    if high > low and high > mid:
+    if _dominates(high, mid) and _dominates(high, low):
         return GM_CRASH if decay_ratio > CRASH_DECAY_THRESHOLD else GM_CLOSED_HAT
-    if low > mid:
+    if _dominates(low, mid) and _dominates(low, high):
         return GM_KICK
     return GM_SNARE
+
+
+def _dominates(band: float, other: float) -> bool:
+    if band <= 0.0:
+        return False
+    return other <= 0.0 or band / other > DOMINANCE_RATIO
 
 
 class DrumTranscriber:

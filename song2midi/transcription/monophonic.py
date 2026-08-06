@@ -7,6 +7,8 @@ carefully. It is a pure function over arrays, so it needs no model.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -17,6 +19,20 @@ from song2midi.transcription.base import sort_notes
 A4_HZ = 440.0
 A4_MIDI = 69
 DEFAULT_FRAME_STEP = 0.01
+MIN_PYIN_FRAME_LENGTH = 2048
+PYIN_PERIODS_PER_FRAME = 2
+
+
+def pyin_frame_length(fmin: float, sr: int) -> int:
+    """Frame length that fits at least two periods of `fmin`.
+
+    pyin needs two periods of the lowest expected pitch inside a frame or its
+    estimates fall apart. A 5-string bass reaches 31 Hz, where the default
+    2048-sample frame holds barely one period — which is why bass came back
+    almost empty before this was derived from fmin.
+    """
+    required = int(np.ceil(PYIN_PERIODS_PER_FRAME * sr / max(fmin, 1e-6)))
+    return max(MIN_PYIN_FRAME_LENGTH, 1 << (required - 1).bit_length())
 
 
 def hz_to_midi_float(f0_hz: NDArray) -> NDArray:
@@ -131,7 +147,9 @@ def _median_filter(values: NDArray, size: int) -> NDArray:
         return values
     padded = np.pad(values, size // 2, mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, size)
-    with np.errstate(invalid="ignore"):
+    with warnings.catch_warnings():
+        # An all-unvoiced window is a normal state, not a problem.
+        warnings.simplefilter("ignore", RuntimeWarning)
         return np.nanmedian(windows, axis=-1)
 
 
@@ -172,16 +190,21 @@ class MonophonicTranscriber:
         import librosa
 
         hop_length = 256
-        f0, _, voiced_prob = librosa.pyin(
+        f0, voiced_flag, _ = librosa.pyin(
             y=mono,
             fmin=self.fmin,
             fmax=self.fmax,
             sr=sr,
-            frame_length=2048,
+            frame_length=pyin_frame_length(self.fmin, sr),
             hop_length=hop_length,
         )
         times = librosa.times_like(f0, sr=sr, hop_length=hop_length)
-        return np.nan_to_num(f0), times, np.nan_to_num(voiced_prob)
+        # pyin's `voiced_prob` is an HMM posterior, not a confidence on crepe's
+        # scale — it peaks around 0.28 even on a clean synthetic tone, so
+        # comparing it to a 0.5 threshold discards everything. `voiced_flag` is
+        # pyin's own voicing decision, already thresholded; use that.
+        confidence = np.where(np.nan_to_num(voiced_flag, nan=0.0) > 0, 1.0, 0.0)
+        return np.nan_to_num(f0), times, confidence
 
     def _track_crepe(self, mono, sr):
         import librosa

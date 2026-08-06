@@ -51,9 +51,39 @@ def test_high_energy_with_slow_decay_is_a_crash(freqs):
     )
 
 
+def test_broadband_hit_is_a_snare_not_a_cymbal(freqs):
+    """A snare has plenty of top end, but it also has the body of the drum.
+
+    Testing only "high beats mid" sends every snare to the crash.
+    """
+    spectrum = spectrum_at(freqs, [250, 450, 8000, 11000, 13000])
+    assert classify_onset(spectrum, freqs, decay_ratio=0.6) == GM_SNARE
+
+
+def test_white_noise_burst_is_a_snare(freqs):
+    rng = np.random.default_rng(0)
+    spectrum = np.abs(rng.standard_normal(freqs.size))
+    assert classify_onset(spectrum, freqs, decay_ratio=0.4) == GM_SNARE
+
+
 def test_silence_yields_no_notes():
     audio = np.zeros((2, SR), dtype=np.float32)
     assert DrumTranscriber().transcribe(audio, SR) == []
+
+
+def test_snare_pattern_is_classified_as_snares():
+    rng = np.random.default_rng(0)
+    mono = np.zeros(SR * 2, dtype=np.float32)
+    length = int(0.12 * SR)
+    for time in (0.3, 0.9, 1.5):
+        start = int(time * SR)
+        mono[start : start + length] += (
+            rng.standard_normal(length) * np.exp(-np.linspace(0, 14, length)) * 0.5
+        ).astype(np.float32)
+
+    notes = DrumTranscriber().transcribe(np.stack([mono, mono]), SR)
+
+    assert {n.pitch for n in notes} == {GM_SNARE}
 
 
 def kick_hit(length, sr=SR, freq=60.0):
