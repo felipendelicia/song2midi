@@ -80,11 +80,17 @@ def _available_gb(device: str) -> float:
 
 
 def _available_ram_gb() -> float:
+    """Available RAM in GB, or `FALLBACK_AVAILABLE_GB` when it cannot be read.
+
+    This used to parse /proc/meminfo, which does not exist on Windows or macOS:
+    both silently took the 2 GB fallback and got the smallest Demucs segment no
+    matter how much memory the machine had. psutil is the cross-platform answer,
+    so there is one code path rather than one per OS.
+    """
     try:
-        with open("/proc/meminfo") as handle:
-            for line in handle:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) / 1024**2
-    except OSError:
-        pass
-    return FALLBACK_AVAILABLE_GB  # conservative default when we cannot tell
+        import psutil
+
+        available = psutil.virtual_memory().available / 1024**3
+    except Exception:  # psutil missing, or a platform it cannot read
+        return FALLBACK_AVAILABLE_GB
+    return available if available > 0.0 else FALLBACK_AVAILABLE_GB

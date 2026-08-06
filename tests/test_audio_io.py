@@ -63,13 +63,34 @@ def test_corrupt_file_raises(tmp_path):
         load(path)
 
 
-@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-def test_mp3_is_decoded_through_ffmpeg(tmp_path):
-    source = write_wav(tmp_path / "t.wav", np.zeros(TARGET_SR, dtype=np.float32), TARGET_SR)
-    mp3 = tmp_path / "t.mp3"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), str(mp3)], check=True)
+def test_mp3_is_decoded_without_ffmpeg(tmp_path, monkeypatch):
+    """The bundled libsndfile decodes mp3 via libmpg123.
 
+    Pinned with ffmpeg forced out of reach, because a standalone Windows .exe
+    runs on machines that have no ffmpeg at all — if this ever regresses to the
+    subprocess path, the format most users feed it stops working there.
+    """
+    mp3 = tmp_path / "t.mp3"
+    tone = np.sin(2 * np.pi * 440 * np.arange(TARGET_SR) / TARGET_SR) * 0.4
+    sf.write(str(mp3), tone.astype(np.float32), TARGET_SR, format="MP3")
+
+    monkeypatch.setattr("song2midi.audio.io.ffmpeg_executable", lambda: None)
     audio, sr = load(mp3)
+
+    assert sr == TARGET_SR
+    assert audio.shape[0] == 2
+    assert audio.dtype == np.float32
+    assert np.abs(audio).max() > 0.1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_ffmpeg_only_format_round_trips(tmp_path):
+    """m4a is genuinely outside libsndfile, so it exercises the ffmpeg path."""
+    source = write_wav(tmp_path / "t.wav", np.zeros(TARGET_SR, dtype=np.float32), TARGET_SR)
+    m4a = tmp_path / "t.m4a"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(source), str(m4a)], check=True)
+
+    audio, sr = load(m4a)
 
     assert sr == TARGET_SR
     assert audio.shape[0] == 2

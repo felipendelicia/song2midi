@@ -63,9 +63,30 @@ def build_config(args: argparse.Namespace) -> TranscriptionConfig:
     )
 
 
+def configure_output_encoding() -> None:
+    """Make stdout/stderr able to encode any path we might be handed.
+
+    A non-UTF-8 locale — every default Windows install, and the C locale
+    anywhere — gives redirected streams a code page that cannot represent most
+    filenames. Since the only success output is the path of a file already
+    written to disk, an encoding error here would crash the process *after* the
+    work succeeded. `backslashreplace` is the load-bearing half: after this call
+    printing can no longer fail.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # None under a windowed build, or a plain file
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     from song2midi.pipeline import run
 
+    configure_output_encoding()
     args = parse_args(argv)
     config = build_config(args)
     try:
