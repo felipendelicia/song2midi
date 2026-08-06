@@ -183,10 +183,16 @@ excludes = [
     # librosa.display and librosa.util.files are attached lazily and never used
     "matplotlib", "IPython", "notebook",
     # test suites dragged in by collect_submodules
-    "numba.tests", "llvmlite.tests", "sklearn.tests", "scipy.tests",
-    "numpy.tests", "torch.test", "torch.testing._internal",
+    "numba.tests", "llvmlite.tests", "sklearn.tests",
+    "numpy.tests", "torch.test",
     "pytest", "_pytest",
     # NOTE: do NOT exclude `torchgen` - a plain `import torch` pulls it in.
+    # NOTE: do NOT exclude `torch.testing._internal` either, despite the name.
+    # Importing beat_this.inference pulls in torch.testing._internal.common_dtype
+    # and .logging_tensor through torch's own import chain; excluding it made the
+    # frozen build fail with "No module named 'torch.testing._internal'" and fall
+    # back to librosa beat tracking, which exits 0 and is therefore invisible
+    # unless something checks stderr. Caught by a local Linux freeze.
     # Linux/CUDA-only, must never appear in a Windows build
     "triton", "nvidia",
     # GUI toolkits pulled in by transitive optional imports
