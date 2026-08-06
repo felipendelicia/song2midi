@@ -8,10 +8,21 @@ dependencies = [
     "soundfile",
     "librosa",
     "pretty_midi",
+    "basic-pitch[onnx]>=0.4.0",
+    "setuptools<81",
 ]
 
 [project.optional-dependencies]
 gpu = []
+
+[tool.uv]
+# basic-pitch 0.4.0 hard-requires TensorFlow on Linux/py3.11, but it selects its
+# backend with a try/except at import time and ships an ONNX copy of the model.
+# With TF absent it uses onnxruntime, which is ~2 GB smaller and loads faster.
+override-dependencies = ["tensorflow; sys_platform == 'never'"]
+# resampy <0.4.3 (pinned by basic-pitch) imports pkg_resources, removed in
+# setuptools 81.
+constraint-dependencies = ["setuptools<81"]
 
 [project.scripts]
 song2midi = "song2midi.cli:main"
