@@ -1,0 +1,81 @@
+"""Command line entry point."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from song2midi.config import DEFAULT_STEMS, STEM_ROUTING, TranscriptionConfig
+from song2midi.errors import Song2MidiError
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="song2midi",
+        description="Transcribe a song into a multitrack MIDI file.",
+    )
+    parser.add_argument("input", type=Path, help="audio file to transcribe")
+    parser.add_argument(
+        "-o", "--output", type=Path, help="output .mid (default: alongside input)"
+    )
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--no-separate",
+        action="store_true",
+        help="skip source separation and transcribe the whole mix",
+    )
+    parser.add_argument(
+        "--stems",
+        default=",".join(DEFAULT_STEMS),
+        help=f"comma-separated stems to transcribe (default: {','.join(DEFAULT_STEMS)})",
+    )
+    parser.add_argument("--quantize", help="grid to snap onsets to, e.g. 1/16")
+    parser.add_argument(
+        "--quantize-strength",
+        type=float,
+        default=1.0,
+        help="0 leaves onsets alone, 1 snaps them fully to the grid",
+    )
+    parser.add_argument("--workdir", type=Path, help="cache directory")
+    parser.add_argument("--no-cache", action="store_true")
+    return parser.parse_args(argv)
+
+
+def build_config(args: argparse.Namespace) -> TranscriptionConfig:
+    stems = tuple(stem.strip() for stem in args.stems.split(",") if stem.strip())
+    unknown = [stem for stem in stems if stem not in STEM_ROUTING]
+    if unknown:
+        raise SystemExit(
+            f"song2midi: unknown stem(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(sorted(STEM_ROUTING))}"
+        )
+    if not 0.0 <= args.quantize_strength <= 1.0:
+        raise SystemExit("song2midi: --quantize-strength must be between 0 and 1")
+    return TranscriptionConfig(
+        separate=not args.no_separate,
+        stems=stems,
+        device=args.device,
+        quantize=args.quantize,
+        quantize_strength=args.quantize_strength,
+        use_cache=not args.no_cache,
+        workdir=args.workdir,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    from song2midi.pipeline import run
+
+    args = parse_args(argv)
+    config = build_config(args)
+    try:
+        output = run(args.input, args.output, config)
+    except Song2MidiError as exc:
+        print(f"song2midi: {exc}", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
