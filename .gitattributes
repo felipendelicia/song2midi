@@ -1,8 +1,9 @@
-# Windows scripts must keep CRLF: cmd.exe mis-parses LF-only batch files,
-# and a .ps1 checked out with LF confuses some Windows editors.
+# Normalise everything to LF in the repository.
+* text=auto eol=lf
+
+# ...except the Windows scripts. Later rules win in gitattributes, so these
+# must come after the catch-all. cmd.exe mis-parses an LF-only batch file, and
+# a .ps1 with LF endings confuses some Windows editors.
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.bat text eol=crlf
-
-# Everything else stays LF in the repo.
-* text=auto eol=lf
