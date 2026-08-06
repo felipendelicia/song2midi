@@ -76,6 +76,61 @@ function Write-Step { param([string] $Message) Write-Host "`n==> $Message" -Fore
 function Write-Ok { param([string] $Message) Write-Host "    $Message" -ForegroundColor Green }
 function Write-Warn { param([string] $Message) Write-Host "    $Message" -ForegroundColor Yellow }
 
+function Format-Elapsed {
+    param([int] $Seconds)
+    return '{0:d2}:{1:d2}' -f [int]($Seconds / 60), ($Seconds % 60)
+}
+
+# One directory listing, one level deep: cheap enough to run every few seconds
+# even while uv is writing tens of thousands of files. A recursive size would
+# cost more than the work it is reporting on.
+function Get-UnpackProgress {
+    param([string] $Dir)
+    if (-not $Dir -or -not (Test-Path -LiteralPath $Dir)) { return 'downloading' }
+    $count = @(Get-ChildItem -LiteralPath $Dir -Directory -ErrorAction SilentlyContinue).Count
+    if ($count -eq 0) { return 'downloading' }
+    return "$count packages unpacked"
+}
+
+# Run a long command while printing a heartbeat.
+#
+# Without this the script looks hung for minutes: uv draws a progress bar with
+# ANSI escapes that the legacy Windows console often will not render, and torch
+# alone is a ~200 MB download from download.pytorch.org. Silence uv's bar and
+# print something that renders in any console, so "still working" and "wedged"
+# are distinguishable.
+function Invoke-WithHeartbeat {
+    param(
+        [Parameter(Mandatory = $true)][string] $Exe,
+        [Parameter(Mandatory = $true)][string[]] $ArgumentList,
+        [string] $WatchDir,
+        [int] $IntervalSeconds = 10
+    )
+
+    $previousNoProgress = $env:UV_NO_PROGRESS
+    $env:UV_NO_PROGRESS = '1'
+    try {
+        # -NoNewWindow so the child still writes its own output to this console.
+        $proc = Start-Process -FilePath $Exe -ArgumentList $ArgumentList -NoNewWindow -PassThru
+        $started = Get-Date
+        $nextBeat = $IntervalSeconds
+        while (-not $proc.HasExited) {
+            Start-Sleep -Milliseconds 500
+            $elapsed = [int]((Get-Date) - $started).TotalSeconds
+            if ($elapsed -ge $nextBeat) {
+                $nextBeat = $elapsed + $IntervalSeconds
+                Write-Host "    [$(Format-Elapsed $elapsed)] $(Get-UnpackProgress $WatchDir)" -ForegroundColor DarkGray
+            }
+        }
+        $proc.WaitForExit()
+        $total = [int]((Get-Date) - $started).TotalSeconds
+        Write-Host "    [$(Format-Elapsed $total)] finished" -ForegroundColor DarkGray
+        return $proc.ExitCode
+    } finally {
+        $env:UV_NO_PROGRESS = $previousNoProgress
+    }
+}
+
 # Explorer's "Run with PowerShell" verb opens a console *for* this script and
 # destroys it the moment the script returns, so every instruction and every
 # error would flash past. Detect that launch: explorer.exe started us with the
@@ -195,8 +250,9 @@ Write-Step 'Installing Python 3.11'
 # pyproject pins >=3.11,<3.12. uv fetches a standalone build from the
 # python-build-standalone releases on GitHub; the system Python, whatever
 # version it is, is left alone.
-uv python install 3.11
-if ($LASTEXITCODE -ne 0) {
+Write-Host '    ~30 MB. Usually under a minute.' -ForegroundColor Gray
+$code = Invoke-WithHeartbeat -Exe 'uv' -ArgumentList @('python', 'install', '3.11') -IntervalSeconds 10
+if ($code -ne 0) {
     Write-Warn 'could not download a managed Python 3.11.'
     Write-Warn 'uv fetches it from github.com/astral-sh/python-build-standalone/releases;'
     Write-Warn 'if GitHub is unreachable, set UV_PYTHON_INSTALL_MIRROR to another source.'
@@ -259,10 +315,14 @@ if ($LASTEXITCODE -eq 3) {
 }
 
 Write-Step 'Creating the locked environment (~350 MB of wheels; ~1 GB on disk once unpacked)'
+Write-Host '    Expect 5-20 minutes depending on the connection. torch alone is a ~200 MB' -ForegroundColor Gray
+Write-Host '    download. A heartbeat prints every 10 seconds; as long as it keeps' -ForegroundColor Gray
+Write-Host '    printing, the install is alive.' -ForegroundColor Gray
 # --locked fails rather than re-resolving, so the environment matches the
 # lockfile that CI builds from.
-uv sync --locked
-if ($LASTEXITCODE -ne 0) {
+$sitePackages = Join-Path $repo '.venv\Lib\site-packages'
+$code = Invoke-WithHeartbeat -Exe 'uv' -ArgumentList @('sync', '--locked') -WatchDir $sitePackages
+if ($code -ne 0) {
     Write-Warn '"No interpreter found for Python 3.11" or a download error means there is'
     Write-Warn 'no Python 3.11 on this machine and uv could not fetch one: install Python'
     Write-Warn '3.11 from python.org, or set UV_PYTHON_INSTALL_MIRROR, then re-run.'
@@ -311,6 +371,8 @@ $probe | uv run --no-sync python -
 if ($LASTEXITCODE -ne 0) { Fail 'the installed libsndfile cannot decode mp3' }
 
 Write-Step 'Priming the beat_this checkpoint (77 MB)'
+Write-Host '    From a university host that can be slow. A progress bar follows; if it' -ForegroundColor Gray
+Write-Host '    stalls, Ctrl-C is safe - the install is already usable without it.' -ForegroundColor Gray
 # From source there is no bundled checkpoint: analysis/beats.py finds one only
 # under sys._MEIPASS, which PyInstaller sets and uv never does. So the first
 # transcription fetches it from a university WebDAV host. Do it here, where a
