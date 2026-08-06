@@ -8,12 +8,19 @@ bar-level quantisation is unavailable — that degradation is intentional.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
 from song2midi.audio.io import to_mono
 from song2midi.midi.model import TempoMap
+
+# beat_this resolves this shortname by downloading ~77 MB from a university
+# WebDAV host on first use. A frozen build ships the file instead, so tempo
+# detection works offline rather than silently degrading to librosa.
+CHECKPOINT_NAME = "final0"
+BUNDLED_CHECKPOINT = Path("beat_this") / f"{CHECKPOINT_NAME}.ckpt"
 
 
 def detect(audio: NDArray[np.float32], sr: int, device: str = "cpu") -> TempoMap:
@@ -34,13 +41,28 @@ def detect_librosa(audio: NDArray[np.float32], sr: int) -> TempoMap:
     return TempoMap.from_beats(np.asarray(beats, dtype=np.float64))
 
 
+def checkpoint() -> str:
+    """Bundled checkpoint if there is one, else the shortname beat_this fetches.
+
+    `beat_this.inference.load_checkpoint` tries `torch.load(path)` before it
+    reaches for the network, so handing it a filesystem path short-circuits the
+    download entirely.
+    """
+    bundle = getattr(sys, "_MEIPASS", None)  # set by PyInstaller
+    if bundle:
+        local = Path(bundle) / BUNDLED_CHECKPOINT
+        if local.is_file():
+            return str(local)
+    return CHECKPOINT_NAME
+
+
 def _detect_beat_this(audio: NDArray[np.float32], sr: int, device: str) -> TempoMap:
     from beat_this.inference import Audio2Beats
 
     mono = to_mono(audio)
     if not np.any(mono):
         return TempoMap.constant()
-    beats, downbeats = Audio2Beats(device=device)(mono, sr)
+    beats, downbeats = Audio2Beats(checkpoint_path=checkpoint(), device=device)(mono, sr)
     return TempoMap.from_beats(
         np.asarray(beats, dtype=np.float64),
         np.asarray(downbeats, dtype=np.float64),

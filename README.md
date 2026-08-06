@@ -45,9 +45,31 @@ La cuantización está apagada por defecto. El cache está indexado por hash del
 archivo, y cada etapa tiene su propia clave: cambiar `--quantize` no invalida los
 stems, que son el 90% del tiempo de cómputo.
 
+## Instalación
+
+### Windows
+
+Bajá el `.zip` de [Releases](https://github.com/felipendelicia/song2midi/releases),
+descomprimilo y corré `song2midi.exe` desde una terminal. No necesita Python ni
+nada más instalado. El ejecutable no está firmado, así que SmartScreen avisa la
+primera vez.
+
+### Linux / macOS
+
+```bash
+git clone https://github.com/felipendelicia/song2midi
+cd song2midi && uv sync
+uv run song2midi cancion.mp3
+```
+
 ## Requisitos
 
-Python 3.11 y ffmpeg (solo para mp3/m4a).
+Python 3.11.
+
+**Formatos:** `.wav`, `.flac`, `.ogg`, `.aiff`, `.mp3` y `.opus` se decodifican
+sin herramientas externas — el libsndfile que traen los wheels de `soundfile`
+linkea libmpg123 y libopus. Solo `.m4a`, `.aac` y `.wma` necesitan `ffmpeg`, en
+el PATH o al lado del ejecutable.
 
 Con GPU el pico de VRAM es ~3 GB, en la separación; `device.py` mide la memoria
 disponible y elige el `segment` de Demucs que entre con 20% de margen, así que
@@ -56,6 +78,22 @@ por canción.
 
 Torch se instala en su variante CPU desde el índice de PyTorch. Para GPU,
 instalá el wheel CUDA correspondiente a tu placa por encima.
+
+## Build del ejecutable de Windows
+
+Lo hace CI (`.github/workflows/build.yml`) en cada push a `main`, y en un tag
+`v*` lo adjunta a un Release. Localmente:
+
+```bash
+python .github/scripts/fetch_assets.py      # baja el checkpoint de beat_this
+uv pip install pyinstaller==6.21.0
+pyinstaller packaging/song2midi.spec --clean --noconfirm
+```
+
+El bundle es one-dir, no one-file: son cientos de MB y un one-file los
+descomprime en `%TEMP%` en **cada** ejecución. El checkpoint de `beat_this`
+(77 MB) va adentro, así que la detección de tempo no necesita red; los pesos de
+htdemucs (~80 MB) se bajan del hub de Hugging Face la primera vez que separás.
 
 ## Limitaciones conocidas
 

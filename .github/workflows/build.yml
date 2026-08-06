@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Pinned rather than "latest": uv's sync semantics (in particular the pruning
-  # of packages the lockfile does not mention) decide whether the PyInstaller
-  # install below survives to the build step.
+  # Pinned rather than "latest": uv's sync semantics — in particular the
+  # pruning of packages the lockfile does not mention — decide whether the
+  # PyInstaller install below survives to the build step.
   UV_VERSION: "0.11.21"
   PYTHON_VERSION: "3.11"
   PYINSTALLER_VERSION: "6.21.0"
@@ -38,7 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v9
+      # The full release tag, not @v9: astral-sh/setup-uv publishes no moving
+      # major tag past v7, so `@v9` fails the job with "unable to resolve
+      # action".
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
@@ -56,18 +59,18 @@ jobs:
   windows-build:
     name: build exe (windows)
     runs-on: windows-latest
-    # A cold uv sync pulls ~344 MB of wheels (122 MB of it torch), and
-    # PyInstaller's analysis of torch is the slowest single step in the
-    # workflow. 90 minutes is generous on purpose: a timeout here reads as a
-    # flake, not as a signal.
+    # A cold uv sync pulls hundreds of MB of wheels, and PyInstaller's analysis
+    # of torch is the slowest single step in the workflow. 90 minutes is
+    # generous on purpose: a timeout here should read as a real hang, not as a
+    # flake.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
       # Defender scans every file PyInstaller writes into build/ and dist/,
-      # which is tens of thousands of files. Excluding the two directories the
-      # build touches is the single cheapest speedup on a Windows runner.
-      # Non-fatal: if the runner image ever stops granting this, carry on.
+      # which is tens of thousands of files. Excluding the directories the build
+      # touches is the single cheapest speedup on a Windows runner. Non-fatal:
+      # if the runner image ever stops granting this, carry on.
       - name: Exclude the build directories from Defender
         continue-on-error: true
         shell: pwsh
@@ -76,31 +79,30 @@ jobs:
           Add-MpPreference -ExclusionPath "${{ runner.temp }}"
 
       # Deliberately not uv's managed CPython. uv would happily download a
-      # python-build-standalone 3.11 and the environment would resolve exactly
-      # the same, but PyInstaller is the one tool in this workflow that cares
-      # which CPython build it is freezing, and the hosted-tool-cache CPython
-      # is the configuration PyInstaller is tested against. It costs ~10 s.
+      # python-build-standalone 3.11 and resolve the same environment, but
+      # PyInstaller is the one tool here that cares which CPython build it is
+      # freezing, and the hosted tool-cache CPython is what it is tested
+      # against. Costs about ten seconds.
       - uses: actions/setup-python@v7
         id: python
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           # The uv cache holds the wheels and their unpacked copies, so this is
-          # also the torch download cache: the win_amd64 CPU wheel alone is
-          # 122 MB off download.pytorch.org on every cold run. setup-uv puts it
-          # under RUNNER_TEMP on hosted runners, i.e. the same drive as the
-          # workspace, which is what lets uv hardlink instead of copy.
+          # also the torch download cache. setup-uv puts it under RUNNER_TEMP on
+          # hosted runners, i.e. the same drive as the workspace, which is what
+          # lets uv hardlink instead of copy.
           cache-dependency-glob: uv.lock
 
       # --locked fails instead of re-resolving. The lockfile already covers
       # Windows: [tool.uv] environments is
       # "sys_platform != 'darwin' or platform_machine != 'x86_64'", which is
       # true on win32, and every package in the resulting install set has a
-      # win_amd64 or py3-none-any wheel - no compiler needed on the runner.
+      # win_amd64 or py3-none-any wheel, so the runner needs no compiler.
       - name: Install the locked environment
         env:
           UV_PYTHON: ${{ steps.python.outputs.python-path }}
@@ -109,6 +111,30 @@ jobs:
       - name: Run the fast test suite
         run: uv run --no-sync pytest -q
 
+      # The beat_this checkpoint is 77 MB from a university WebDAV host. It goes
+      # into the bundle, so it is a build input rather than a runtime download.
+      # Restore and save are split so a failed fetch cannot write an empty
+      # directory under the exact key and poison it until uv.lock changes.
+      - name: Restore the staged model assets
+        id: assets
+        uses: actions/cache/restore@v6
+        with:
+          path: packaging/_assets
+          key: assets-${{ hashFiles('uv.lock', '.github/scripts/fetch_assets.py') }}
+
+      # A no-op on a cache hit. On a miss it downloads, checks the size and runs
+      # torch.load before staging, so a truncated transfer fails here rather
+      # than shipping.
+      - name: Stage the model assets
+        run: uv run --no-sync python .github/scripts/fetch_assets.py
+
+      - name: Save the staged model assets
+        if: steps.assets.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: packaging/_assets
+          key: assets-${{ hashFiles('uv.lock', '.github/scripts/fetch_assets.py') }}
+
       # After uv sync, never before: uv sync is exact and removes anything the
       # lockfile does not mention, PyInstaller included. Every later uv run
       # carries --no-sync for the same reason.
@@ -116,10 +142,9 @@ jobs:
         run: uv pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
 
       # PyInstaller never chdir's to the spec's directory: paths written inside
-      # the spec (the entry script, runtime hooks) resolve against the working
-      # directory, which is the repo root here. distpath/workpath are passed
-      # explicitly so the output location does not depend on where the spec
-      # happens to live.
+      # the spec resolve against the working directory, which is the repo root
+      # here. distpath and workpath are passed explicitly so the output location
+      # does not depend on where the spec happens to live.
       - name: Build the executable
         run: >
           uv run --no-sync pyinstaller packaging/song2midi.spec
@@ -139,75 +164,111 @@ jobs:
             Write-Host '::endgroup::'
           }
 
-      # beat_this pulls a 77 MB checkpoint from a university WebDAV host on
-      # first use (torch.hub, under TORCH_HOME). Restore and save are split so
-      # a failed smoke test cannot write an empty directory under the exact
-      # key and poison it until uv.lock changes.
-      - name: Restore the beat_this checkpoint
-        id: torch-home
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ runner.temp }}/torch-home
-          key: torch-home-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: torch-home-${{ runner.os }}-
+      # Built with the project environment, not with ffmpeg: the fixture for the
+      # "mp3 needs no external decoder" assertion must not itself need one.
+      #
+      # The decoy is the other half of that assertion. A zero-byte ffmpeg.exe
+      # first on PATH satisfies shutil.which — on Windows os.access(X_OK) is
+      # effectively F_OK — but cannot be launched by CreateProcess. So if the
+      # mp3 still decodes, libsndfile decoded it; and the .m4a case then proves
+      # the resulting OSError becomes a clean domain error. Planting a decoy is
+      # safer than gutting PATH, which would risk breaking DLL resolution for
+      # reasons unrelated to what is under test.
+      - name: Build the smoke-test fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $work = Join-Path $env:RUNNER_TEMP 'smoke'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          python .github\scripts\make_tone.py "$work\tone.wav" 3
+          if ($LASTEXITCODE -ne 0) { throw 'could not generate the test tone' }
+          uv run --no-sync python .github\scripts\make_mp3.py "$work\tone.wav" "$work\tone.mp3"
+          if ($LASTEXITCODE -ne 0) { throw 'could not encode the mp3 fixture' }
+          # Enough of an MPEG-4 header to be a plausible .m4a, and nothing more.
+          [System.IO.File]::WriteAllBytes(
+            "$work\broken.m4a",
+            [byte[]](0,0,0,0x18,0x66,0x74,0x79,0x70,0x4D,0x34,0x41,0x20))
+          $decoy = Join-Path $env:RUNNER_TEMP 'decoy'
+          New-Item -ItemType Directory -Force -Path $decoy | Out-Null
+          New-Item -ItemType File -Force -Path (Join-Path $decoy 'ffmpeg.exe') | Out-Null
 
       # The step that decides whether this workflow is worth having. Everything
       # above proves the code imports; this proves the frozen bundle actually
-      # transcribes: onnxruntime loads nmp.onnx out of the bundle, numba/llvmlite
-      # survive freezing, soundfile finds libsndfile, and torch initialises.
+      # transcribes: onnxruntime loads nmp.onnx out of the bundle, numba and
+      # llvmlite survive freezing, libsndfile decodes both wav and mp3, torch
+      # initialises, and beat_this loads its bundled checkpoint.
       - name: Smoke-test the executable
         shell: pwsh
-        env:
-          TORCH_HOME: ${{ runner.temp }}/torch-home
         run: |
           $ErrorActionPreference = 'Stop'
           # PowerShell 7.4+ turns a non-zero native exit code into a terminating
           # error under ErrorActionPreference=Stop. Turning that off keeps the
-          # explicit $LASTEXITCODE checks below in charge, so Pop-Location still
-          # runs and the failure message says which command failed.
+          # explicit $LASTEXITCODE checks below in charge, so the finally block
+          # still runs and the failure says which command failed.
           $PSNativeCommandUseErrorActionPreference = $false
 
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\song2midi\song2midi.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw "no executable at $exe" }
 
-          $work = Join-Path $env:RUNNER_TEMP 'smoke'
-          New-Item -ItemType Directory -Force -Path $work | Out-Null
-          $wav = Join-Path $work 'tone.wav'
-          $mid = Join-Path $work 'tone.mid'
-
-          # Standard library only, so the same script runs on a machine that
-          # has no project environment (see the clean-runner job).
-          python .github\scripts\make_tone.py $wav 3
-          if ($LASTEXITCODE -ne 0) { throw 'could not generate the test tone' }
-
           & $exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "--help exited $LASTEXITCODE" }
 
-          # Run from outside the repo with the interpreter's environment
-          # cleared: if the bundle silently leans on the build tree or on the
-          # uv venv, it fails here rather than on a user's machine.
-          Remove-Item Env:PYTHONHOME, Env:PYTHONPATH, Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
-          Push-Location $work
-          & $exe $wav --no-separate --no-cache --device cpu -o $mid
-          $code = $LASTEXITCODE
-          Pop-Location
-          if ($code -ne 0) { throw "song2midi.exe exited $code" }
+          $work = Join-Path $env:RUNNER_TEMP 'smoke'
 
-          # Parses the SMF by hand: header, track count, and note-on events.
+          # Run from outside the repo with the interpreter's environment
+          # cleared: if the bundle silently leans on the build tree or on the uv
+          # venv, it fails here rather than on a user's machine. The decoy goes
+          # first on PATH so any route through ffmpeg fails loudly.
+          Remove-Item Env:PYTHONHOME, Env:PYTHONPATH, Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+          $savedPath = $env:PATH
+          $env:PATH = (Join-Path $env:RUNNER_TEMP 'decoy') + ';' + $env:PATH
+          Push-Location $work
+          try {
+            foreach ($name in @('tone.wav', 'tone.mp3')) {
+              $tag = $name -replace '\.', '-'
+              & $exe $name --no-separate --no-cache --device cpu -o "$tag.mid" 2> "$tag.err"
+              $code = $LASTEXITCODE
+              Write-Host "--- stderr for $name ---"
+              Get-Content "$tag.err" -ErrorAction SilentlyContinue
+              # An mp3 that reached the decoy would exit 1 here: proof that
+              # libsndfile, not ffmpeg, decoded it.
+              if ($code -ne 0) { throw "song2midi.exe on $name exited $code" }
+              # The exe carries the checkpoint, so this warning means the
+              # bundled beat_this stack is broken. It would otherwise be
+              # invisible: the process still exits 0 on the librosa fallback.
+              if (Select-String -Path "$tag.err" -Pattern 'beat_this unavailable' -Quiet) {
+                throw "beat_this did not load inside the bundle (input: $name)"
+              }
+            }
+
+            # The formats that genuinely still need ffmpeg must fail as a domain
+            # error, not as a traceback. This is the only place the Windows
+            # CreateProcess failure path is ever executed.
+            & $exe broken.m4a --no-separate --no-cache --device cpu -o m4a.mid 2> m4a.err
+            $code = $LASTEXITCODE
+            Write-Host '--- stderr for broken.m4a ---'
+            Get-Content m4a.err -ErrorAction SilentlyContinue
+            if ($code -ne 1) { throw "an undecodable .m4a should exit 1, got $code" }
+            if (Select-String -Path m4a.err -Pattern 'Traceback' -Quiet) {
+              throw 'an unlaunchable ffmpeg produced a traceback instead of a message'
+            }
+            if (-not (Select-String -Path m4a.err -Pattern '^song2midi: ' -Quiet)) {
+              throw 'the .m4a failure did not produce a song2midi error message'
+            }
+          } finally {
+            Pop-Location
+            $env:PATH = $savedPath
+          }
+
+          # Parses the SMF by hand: header, track count and note-on events.
           # --no-separate routes the whole mix through Basic Pitch, so a file
           # with zero notes means the ONNX model did not run even though the
-          # process exited 0.
-          python .github\scripts\check_midi.py $mid --min-tracks 2 --min-notes 1
-          if ($LASTEXITCODE -ne 0) { throw 'the produced .mid did not validate' }
-
-      # Only now that the bundle is known to work. A poisoned cache would make
-      # every later run fall back to librosa without anyone noticing.
-      - name: Save the beat_this checkpoint
-        if: steps.torch-home.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/torch-home
-          key: torch-home-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          # process exited 0. Two tracks: the tempo track plus the one stem.
+          foreach ($mid in @('tone-wav.mid', 'tone-mp3.mid')) {
+            python .github\scripts\check_midi.py "$work\$mid" --min-tracks 2 --min-notes 1
+            if ($LASTEXITCODE -ne 0) { throw "$mid did not validate" }
+          }
 
       - name: Zip the bundle
         id: package
@@ -221,10 +282,10 @@ jobs:
             "0.0.0+$($env:GITHUB_SHA.Substring(0, 7))"
           }
           $zip = "song2midi-$version-windows-x64.zip"
-          # 7z, not Compress-Archive: this is ~1 GB of small files and
-          # Compress-Archive is single-threaded and dramatically slower.
-          # The directory is archived, not its contents, so unzipping produces
-          # a song2midi\ folder instead of spraying files into the cwd.
+          # 7z, not Compress-Archive: this is hundreds of MB of small files and
+          # Compress-Archive is single-threaded and dramatically slower. The
+          # directory is archived, not its contents, so unzipping produces a
+          # song2midi\ folder instead of spraying files into the cwd.
           7z a -tzip -mx=5 -mmt=on "dist\$zip" ".\dist\song2midi" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "7z exited $LASTEXITCODE" }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
@@ -236,25 +297,22 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ steps.package.outputs.zip }}
           # Already a zip; do not spend minutes deflating it a second time.
-          # upload-artifact still wraps it in an outer archive, so the Actions
-          # UI hands you a zip containing a zip. download-artifact unwraps it,
-          # which is all the release job needs.
           compression-level: 0
           if-no-files-found: error
           overwrite: true
           retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}
 
   # Runs the exe on a runner where Python 3.11, uv and the project environment
-  # were never installed. Not a pristine Windows box - the runner image still
-  # ships a Python 3.12 and the VC++ redistributables - but it catches a bundle
-  # that only works next to its own build tree. Gated on tags and manual runs
-  # because it costs an artifact round-trip of about a gigabyte.
+  # were never installed. Not a pristine Windows box — the runner image still
+  # ships a Python and the VC++ redistributables — but it catches a bundle that
+  # only works next to its own build tree. Gated on tags and manual runs because
+  # it costs an artifact round-trip plus a real separation run.
   windows-smoke-clean:
     name: smoke test on a clean runner (windows)
     needs: windows-build
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       # Only for .github/scripts; nothing here builds or installs.
       - uses: actions/checkout@v7
@@ -282,22 +340,41 @@ jobs:
 
           $work = Join-Path $env:RUNNER_TEMP 'smoke'
           New-Item -ItemType Directory -Force -Path $work | Out-Null
-          $wav = Join-Path $work 'tone.wav'
-          $mid = Join-Path $work 'tone.mid'
 
-          # The runner's own Python (3.12 at time of writing). These two scripts
-          # are standard library only precisely so this works.
-          python .github\scripts\make_tone.py $wav 3
+          # The runner's own Python. make_tone.py and check_midi.py are standard
+          # library only precisely so this works without installing anything.
+          python .github\scripts\make_tone.py "$work\tone.wav" 5
           if ($LASTEXITCODE -ne 0) { throw 'could not generate the test tone' }
 
           Push-Location $work
-          & $exe $wav --no-separate --no-cache --device cpu -o $mid
-          $code = $LASTEXITCODE
-          Pop-Location
-          if ($code -ne 0) { throw "song2midi.exe exited $code" }
+          try {
+            & $exe tone.wav --no-separate --no-cache --device cpu -o fast.mid 2> fast.err
+            $code = $LASTEXITCODE
+            Get-Content fast.err -ErrorAction SilentlyContinue
+            if ($code -ne 0) { throw "song2midi.exe exited $code" }
+            if (Select-String -Path fast.err -Pattern 'beat_this unavailable' -Quiet) {
+              throw 'beat_this did not load inside the bundle'
+            }
 
-          python .github\scripts\check_midi.py $mid --min-tracks 2 --min-notes 1
-          if ($LASTEXITCODE -ne 0) { throw 'the produced .mid did not validate' }
+            # The only place separation ever runs in CI. It exercises
+            # device.resolve() -> choose_segment() -> demucs on Windows, and it
+            # fetches the htdemucs weights from the HF hub the way a user's very
+            # first run does. Five tracks: the tempo track plus four stems.
+            & $exe tone.wav --no-cache --device cpu -o full.mid 2> full.err
+            $code = $LASTEXITCODE
+            Get-Content full.err -ErrorAction SilentlyContinue
+            if ($code -ne 0) { throw "song2midi.exe (separating) exited $code" }
+            if (Select-String -Path full.err -Pattern 'falling back to transcribing' -Quiet) {
+              throw 'separation was unavailable inside the bundle'
+            }
+          } finally {
+            Pop-Location
+          }
+
+          python .github\scripts\check_midi.py "$work\fast.mid" --min-tracks 2 --min-notes 1
+          if ($LASTEXITCODE -ne 0) { throw 'fast.mid did not validate' }
+          python .github\scripts\check_midi.py "$work\full.mid" --min-tracks 5 --min-notes 1
+          if ($LASTEXITCODE -ne 0) { throw 'full.mid did not validate' }
 
   release:
     name: attach the exe to the release
@@ -320,8 +397,14 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |
-            Windows build: unzip and run `song2midi.exe`.
+            Windows build: unzip and run `song2midi.exe` from a terminal.
 
             The executable is unsigned, so SmartScreen will warn on first run.
-            `.mp3` and `.m4a` inputs still need `ffmpeg` on PATH; `.wav` and
-            `.flac` do not.
+
+            `.wav`, `.flac`, `.ogg`, `.aiff`, `.mp3` and `.opus` decode with no
+            external tools. `.m4a`, `.aac` and `.wma` need `ffmpeg`, either on
+            PATH or dropped next to `song2midi.exe`.
+
+            The first run that separates downloads the htdemucs weights
+            (~80 MB) from the Hugging Face hub. `--no-separate` needs no
+            network at all.
