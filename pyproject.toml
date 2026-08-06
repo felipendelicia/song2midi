@@ -10,6 +10,13 @@ dependencies = [
     "pretty_midi",
     "basic-pitch[onnx]>=0.4.0",
     "setuptools<81",
+    "demucs>=4.1.0",
+    "torchcrepe>=0.0.24",
+    # torchaudio releases are pinned to matching torch releases. Without a floor
+    # the resolver walks backwards through every pair, downloading a ~200 MB
+    # wheel each time.
+    "torch>=2.6",
+    "torchaudio>=2.6",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +30,22 @@ override-dependencies = ["tensorflow; sys_platform == 'never'"]
 # resampy <0.4.3 (pinned by basic-pitch) imports pkg_resources, removed in
 # setuptools 81.
 constraint-dependencies = ["setuptools<81"]
+# demucs caps torch at <2.3 on Intel Macs only. Resolving for that platform
+# drags the whole project back to torch 2.2; exclude it rather than pin everyone
+# else to a 2024 release. Apple Silicon, Linux and Windows are unaffected.
+environments = ["sys_platform != 'darwin' or platform_machine != 'x86_64'"]
+
+# Torch arrives as a transitive dependency of demucs. PyPI ships the CUDA build
+# by default, which is ~2 GB of libraries a machine without an NVIDIA GPU never
+# loads. Pull the CPU wheels instead; GPU users install torch themselves.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
 
 [project.scripts]
 song2midi = "song2midi.cli:main"
