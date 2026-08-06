@@ -17,6 +17,7 @@ dependencies = [
     # wheel each time.
     "torch>=2.6",
     "torchaudio>=2.6",
+    "beat-this>=1.1.0",
 ]
 
 [project.optional-dependencies]

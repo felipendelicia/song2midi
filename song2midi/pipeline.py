@@ -9,18 +9,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from song2midi.analysis.beats import detect as detect_beats
 from song2midi.audio.io import load
 from song2midi.cache import Cache
 from song2midi.config import STEM_ROUTING, TranscriptionConfig
 from song2midi.device import DeviceBudget, resolve
 from song2midi.errors import SeparationUnavailableError
-from song2midi.midi.model import TempoMap, Track
+from song2midi.midi.model import Track
+from song2midi.midi.quantize import quantize_notes
 from song2midi.midi.writer import write_midi
 from song2midi.separation.base import PassthroughSeparator
 from song2midi.separation.demucs_sep import build_separator
 from song2midi.transcription.base import Transcriber
 
 SEPARATION_CACHE_KEY = "htdemucs"
+# Tracks that can only sound one note at a time; quantisation must not leave
+# them overlapping after onsets move.
+MONOPHONIC_KEYS = frozenset({"vocals", "bass"})
 
 
 def build_transcriber(key: str, budget: DeviceBudget | None = None) -> Transcriber:
@@ -72,7 +77,7 @@ def run(
     budget = resolve(config.device)
 
     stems = _separate(audio, sr, config, budget, cache)
-    tempo_map = TempoMap.constant()
+    tempo_map = detect_beats(audio, sr, budget.device)
 
     tracks = []
     for name in _stems_to_transcribe(stems, config):
@@ -82,6 +87,14 @@ def run(
             f"{name}-{route.transcriber_key}",
             lambda t=transcriber, stem=stems[name]: t.transcribe(stem, sr),
         )
+        if config.quantize:
+            notes = quantize_notes(
+                notes,
+                tempo_map,
+                config.quantize,
+                config.quantize_strength,
+                monophonic=route.transcriber_key in MONOPHONIC_KEYS,
+            )
         tracks.append(
             Track(name=name, notes=notes, program=route.program, is_drum=route.is_drum)
         )

@@ -5,7 +5,7 @@ import soundfile as sf
 
 from song2midi.config import TranscriptionConfig
 from song2midi.errors import SeparationUnavailableError
-from song2midi.midi.model import Note
+from song2midi.midi.model import Note, TempoMap
 from song2midi.pipeline import run
 
 
@@ -126,3 +126,67 @@ def test_cached_run_does_not_recompute(tmp_path, wav, monkeypatch):
     run(wav, tmp_path / "b.mid", config)
 
     assert len(calls) == 1
+
+
+def _stub_tempo_map(*args, **kwargs):
+    return TempoMap.from_beats(np.arange(0, 4.5, 0.5))
+
+
+class OffGridTranscriber:
+    def transcribe(self, audio, sr):
+        return [Note(0.13, 0.40, 60, 100)]
+
+
+@pytest.fixture
+def off_grid_stages(monkeypatch):
+    monkeypatch.setattr(
+        "song2midi.pipeline.build_transcriber",
+        lambda key, budget=None: OffGridTranscriber(),
+    )
+    monkeypatch.setattr("song2midi.pipeline.detect_beats", _stub_tempo_map)
+
+
+def test_detected_tempo_is_written_to_the_file(tmp_path, wav, monkeypatch):
+    monkeypatch.setattr(
+        "song2midi.pipeline.build_transcriber", lambda key, budget=None: StubTranscriber()
+    )
+    monkeypatch.setattr("song2midi.pipeline.detect_beats", _stub_tempo_map)
+    out = tmp_path / "out.mid"
+
+    run(wav, out, TranscriptionConfig(separate=False, use_cache=False))
+
+    _, tempi = pretty_midi.PrettyMIDI(str(out)).get_tempo_changes()
+    assert tempi[0] == pytest.approx(120.0, abs=0.5)
+
+
+def test_quantisation_snaps_onsets_when_requested(tmp_path, wav, off_grid_stages):
+    out = tmp_path / "out.mid"
+
+    run(wav, out, TranscriptionConfig(separate=False, use_cache=False, quantize="1/16"))
+
+    note = pretty_midi.PrettyMIDI(str(out)).instruments[0].notes[0]
+    assert note.start == pytest.approx(0.125, abs=2e-3)
+
+
+def test_without_the_flag_onsets_are_left_alone(tmp_path, wav, off_grid_stages):
+    out = tmp_path / "out.mid"
+
+    run(wav, out, TranscriptionConfig(separate=False, use_cache=False))
+
+    note = pretty_midi.PrettyMIDI(str(out)).instruments[0].notes[0]
+    assert note.start == pytest.approx(0.13, abs=2e-3)
+
+
+def test_partial_strength_moves_onsets_only_part_way(tmp_path, wav, off_grid_stages):
+    out = tmp_path / "out.mid"
+
+    run(
+        wav,
+        out,
+        TranscriptionConfig(
+            separate=False, use_cache=False, quantize="1/16", quantize_strength=0.5
+        ),
+    )
+
+    note = pretty_midi.PrettyMIDI(str(out)).instruments[0].notes[0]
+    assert note.start == pytest.approx(0.1275, abs=2e-3)
