@@ -49,10 +49,32 @@ stems, que son el 90% del tiempo de cómputo.
 
 ### Windows
 
-Bajá el `.zip` de [Releases](https://github.com/felipendelicia/song2midi/releases),
-descomprimilo y corré `song2midi.exe` desde una terminal. No necesita Python ni
-nada más instalado. El ejecutable no está firmado, así que SmartScreen avisa la
-primera vez.
+Todavía **no hay `.exe` publicado** — lo construye CI y el workflow no llegó a
+correr. Mientras tanto, instalar desde el código fuente funciona igual de bien:
+
+```
+git clone https://github.com/felipendelicia/song2midi
+cd song2midi
+.\scripts\setup-windows.cmd
+```
+
+Usá el `.cmd`, no el `.ps1` directamente: Windows viene con la execution policy
+en `Restricted` y rechaza cualquier `.ps1`; un `.cmd` no está sujeto a esa
+política. El script instala `uv` si falta, baja un Python 3.11 propio sin tocar
+el del sistema, arma el entorno y verifica que las dos cosas que suelen romperse
+en una máquina nueva funcionen: el runtime de Visual C++ que necesita torch, y
+que libsndfile decodifique mp3 sin ffmpeg. Nada de esto pide permisos de
+administrador.
+
+Requiere [git](https://git-scm.com/download/win). Si preferís bajar el repo como
+ZIP, después de descomprimirlo corré `Get-ChildItem -Recurse -File .\scripts |
+Unblock-File`, porque Windows marca los archivos bajados de internet.
+
+Después:
+
+```
+uv run song2midi "C:\ruta\cancion.mp3"
+```
 
 ### Linux / macOS
 
@@ -61,6 +83,19 @@ git clone https://github.com/felipendelicia/song2midi
 cd song2midi && uv sync
 uv run song2midi cancion.mp3
 ```
+
+### Cuánto baja la primera vez
+
+| qué | tamaño | cuándo |
+|---|---|---|
+| entorno (torch, onnxruntime, numba…) | ~350 MB | `uv sync` |
+| checkpoint de `beat_this` | 77 MB | primera detección de tempo |
+| pesos de htdemucs | ~80 MB | primera separación |
+
+Todo queda cacheado. Cada canción separada deja además ~170 MB de stems en el
+cache del sistema (`%LOCALAPPDATA%\song2midi` en Windows, `~/.cache/song2midi`
+en Linux); borralo cuando quieras, se regenera. `--no-separate` no baja los
+pesos de htdemucs.
 
 ## Requisitos
 

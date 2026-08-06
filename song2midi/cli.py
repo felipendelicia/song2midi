@@ -94,6 +94,16 @@ def main(argv: list[str] | None = None) -> int:
     except Song2MidiError as exc:
         print(f"song2midi: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        # A separating run takes minutes, so Ctrl-C is a normal way to end one.
+        # Say what survived: the stem cache is the expensive part and it is
+        # reused on the next run.
+        print(
+            "\nsong2midi: interrupted. Anything already cached is kept, so "
+            "re-running resumes from there.",
+            file=sys.stderr,
+        )
+        return 130
     print(output)
     return 0
 

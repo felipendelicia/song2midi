@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pretty_midi
 
+from song2midi.errors import OutputUnwritableError
 from song2midi.midi.model import DEFAULT_BPM, TempoMap, Track
 
 
@@ -40,8 +41,34 @@ def write_midi(
             )
         midi.instruments.append(instrument)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OutputUnwritableError(f"Cannot create {path.parent}: {exc}") from exc
+
     tmp = path.with_name(path.name + ".tmp")
-    midi.write(str(tmp))
-    tmp.replace(path)
+    try:
+        midi.write(str(tmp))
+        # os.replace overwrites atomically on both POSIX and Windows. Windows
+        # refuses when the destination is open in another process, which is
+        # exactly what happens when the previous .mid is loaded in a DAW - the
+        # most likely thing a user of this tool is doing.
+        tmp.replace(path)
+    except PermissionError as exc:
+        _discard(tmp)
+        raise OutputUnwritableError(
+            f"Cannot write {path}: the file is open in another program "
+            f"(close it in your DAW, or pass a different -o path). {exc}"
+        ) from exc
+    except OSError as exc:
+        _discard(tmp)
+        raise OutputUnwritableError(f"Cannot write {path}: {exc}") from exc
     return path
+
+
+def _discard(path: Path) -> None:
+    """Never leave a .tmp behind when the publish step fails."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass

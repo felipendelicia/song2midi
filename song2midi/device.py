@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from song2midi.errors import CudaUnavailableError
+
 # segment length in seconds -> peak memory in GB
 SEGMENT_COST_GB: dict[str, dict[float, float]] = {
     "cuda": {7.8: 3.0, 6.0: 2.4, 5.0: 2.0, 4.0: 1.5},
@@ -61,13 +63,34 @@ def _select_device(requested: str) -> str:
         import torch
     except ImportError:
         if requested == "cuda":
-            raise RuntimeError("CUDA was requested but torch is not installed") from None
+            raise CudaUnavailableError(
+                "CUDA was requested but torch is not installed"
+            ) from None
         return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if requested == "cuda":
-        raise RuntimeError("CUDA was requested but is not available")
+        raise CudaUnavailableError(_why_no_cuda(torch))
     return "cpu"
+
+
+def _why_no_cuda(torch) -> str:
+    """Name the actual cause.
+
+    The project installs the CPU-only torch wheels, so a machine with a
+    perfectly good NVIDIA card still reports no CUDA. Saying only "CUDA is not
+    available" sends the user off to reinstall drivers that are fine.
+    """
+    if getattr(torch.version, "cuda", None) is None:
+        return (
+            "CUDA was requested, but this environment has the CPU-only build of "
+            f"torch ({torch.__version__}), which cannot use a GPU no matter what "
+            "hardware is present. Install a CUDA build of torch to use --device cuda."
+        )
+    return (
+        "CUDA was requested but no usable GPU was found. torch was built for CUDA "
+        f"{torch.version.cuda}; check that the driver is installed and the GPU is visible."
+    )
 
 
 def _available_gb(device: str) -> float:
