@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import warnings
 from pathlib import Path
 
 from song2midi.config import DEFAULT_STEMS, STEM_ROUTING, TranscriptionConfig
@@ -39,6 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--workdir", type=Path, help="cache directory")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="suppress per-stage progress"
+    )
     return parser.parse_args(argv)
 
 
@@ -83,14 +88,29 @@ def configure_output_encoding() -> None:
             pass
 
 
+def silence_third_party_noise() -> None:
+    """Mute warnings the user can do nothing about.
+
+    resampy 0.4.2 (pinned by basic-pitch) imports pkg_resources and warns about
+    its deprecation; the project already pins setuptools<81 to keep it working.
+    huggingface_hub warns that Windows cannot make symlinks without Developer
+    Mode, which only means the model cache uses more disk. Both fire on every
+    single run and bury the progress output.
+    """
+    warnings.filterwarnings("ignore", message=".*pkg_resources.*")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_output_encoding()
+    silence_third_party_noise()
+
     from song2midi.pipeline import run
 
-    configure_output_encoding()
     args = parse_args(argv)
     config = build_config(args)
     try:
-        output = run(args.input, args.output, config)
+        output = run(args.input, args.output, config, progress=not args.quiet)
     except Song2MidiError as exc:
         print(f"song2midi: {exc}", file=sys.stderr)
         return 1

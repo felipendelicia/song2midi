@@ -115,7 +115,11 @@ class DemucsSeparator:
             "device": budget.device,
             "overlap": 0.25,
             "split": True,
-            "progress": False,
+            # Separation is minutes of silent CPU work — by far the longest
+            # stage — and without this the CLI is indistinguishable from hung.
+            # demucs writes its bar to stderr, so stdout stays clean for the
+            # output path.
+            "progress": sys.stderr.isatty(),
         }
         # `segment` moved between apply_model and the model itself across demucs
         # releases; support both rather than pinning a patch version.
