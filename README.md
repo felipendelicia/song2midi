@@ -106,13 +106,47 @@ sin herramientas externas — el libsndfile que traen los wheels de `soundfile`
 linkea libmpg123 y libopus. Solo `.m4a`, `.aac` y `.wma` necesitan `ffmpeg`, en
 el PATH o al lado del ejecutable.
 
-Con GPU el pico de VRAM es ~3 GB, en la separación; `device.py` mide la memoria
-disponible y elige el `segment` de Demucs que entre con 20% de margen, así que
-también funciona en placas de 4 GB. Sin GPU corre en CPU y tarda varios minutos
-por canción.
+Sin GPU corre en CPU y tarda varios minutos por canción.
 
-Torch se instala en su variante CPU desde el índice de PyTorch. Para GPU,
-instalá el wheel CUDA correspondiente a tu placa por encima.
+## GPU (NVIDIA)
+
+Por defecto se instala torch en variante CPU: el wheel CUDA pesa ~2.4 GB contra
+~120 MB, y una máquina sin placa NVIDIA nunca lo usaría. Para activarlo:
+
+```bash
+uv sync --locked --no-group cpu --group cu126
+```
+
+En Windows, `scripts/setup-windows.cmd` detecta la placa y te lo ofrece.
+
+**Ojo: un `uv sync` a secas revierte a CPU** — es exacto por diseño. Usá
+`uv run --no-sync` después de instalar la variante CUDA. Si te olvidás el
+`--no-group cpu`, uv falla con un mensaje claro en vez de instalar algo mixto.
+
+Se usa el índice **cu126**, no uno más nuevo, por dos razones verificadas contra
+`download.pytorch.org`:
+
+1. Es uno de solo dos que publican torch 2.13.0 **y** torchaudio 2.11.0 para
+   Windows/cp311 — el par que ya fija el lockfile.
+2. De esos dos, es el único que todavía trae kernels para placas pre-Turing.
+   PyTorch compila cu126 para `5.0;6.0;6.1;7.0;7.5;8.0;8.6;9.0` y cu130 de 7.5
+   en adelante, porque CUDA 13 eliminó Maxwell, Pascal y Volta. Los wheels son
+   SASS puro: una arquitectura faltante no se puede compilar desde PTX, falla en
+   el primer kernel. La placa de 4 GB más común es una GTX 1050/1050 Ti, que es
+   6.1.
+
+Solo hace falta el driver de NVIDIA; el wheel trae el runtime de CUDA y cuDNN.
+
+### Qué se acelera y qué no
+
+La separación, la voz (CREPE) y la detección de tempo van a la GPU. El bajo usa
+pYIN, la batería usa detección de onsets de librosa, y Basic Pitch corre en
+onnxruntime — esos tres se quedan en CPU pase lo que pase.
+
+El pico de VRAM del pipeline es **CREPE (~1.3 GB), no la separación (~0.5 GB)**.
+Ambas etapas corren de a una y liberan antes de la siguiente, así que los picos
+no se suman. Si aun así falta memoria, CREPE baja el batch a la mitad y después
+cae a CPU en vez de perder la corrida; la separación parte el `segment`.
 
 ## Build del ejecutable de Windows
 

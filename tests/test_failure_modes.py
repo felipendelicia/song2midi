@@ -18,7 +18,7 @@ from song2midi.device import resolve
 from song2midi.errors import CudaUnavailableError, OutputUnwritableError
 from song2midi.midi.model import Note, Track
 from song2midi.midi.writer import write_midi
-from song2midi.separation.demucs_sep import _is_out_of_memory
+from song2midi.device import is_out_of_memory
 
 # --------------------------------------------------------------------------
 # Out-of-memory detection
@@ -39,7 +39,7 @@ from song2midi.separation.demucs_sep import _is_out_of_memory
     ],
 )
 def test_allocation_failures_are_recognised(message):
-    assert _is_out_of_memory(RuntimeError(message))
+    assert is_out_of_memory(RuntimeError(message))
 
 
 @pytest.mark.parametrize(
@@ -51,7 +51,7 @@ def test_allocation_failures_are_recognised(message):
     ],
 )
 def test_other_runtime_errors_are_not_treated_as_oom(message):
-    assert not _is_out_of_memory(RuntimeError(message))
+    assert not is_out_of_memory(RuntimeError(message))
 
 
 # --------------------------------------------------------------------------

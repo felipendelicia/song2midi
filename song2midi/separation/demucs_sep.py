@@ -13,31 +13,13 @@ import sys
 import numpy as np
 from numpy.typing import NDArray
 
-from song2midi.device import DeviceBudget
+from song2midi.device import DeviceBudget, is_out_of_memory
 from song2midi.errors import SeparationUnavailableError
 from song2midi.separation.base import PassthroughSeparator, Separator
 
 MAX_ATTEMPTS = 3
 CPU_FALLBACK_SEGMENT = 4.0
 
-# Torch words allocation failures differently per device, and matching only
-# "out of memory" made the whole retry path dead code on CPU — the one device
-# that actually needs it. CUDA says "CUDA out of memory"; the CPU allocator
-# says "[enforce fail at alloc_cpu.cpp] DefaultCPUAllocator: can't allocate
-# memory"; MPS and the caching allocator have their own phrasings.
-OOM_MARKERS = (
-    "out of memory",
-    "can't allocate memory",
-    "cannot allocate memory",
-    "defaultcpuallocator",
-    "not enough memory",
-    "bad_alloc",
-)
-
-
-def _is_out_of_memory(exc: BaseException) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in OOM_MARKERS)
 
 
 class DemucsSeparator:
@@ -94,7 +76,7 @@ class DemucsSeparator:
                 with torch.no_grad():
                     return self._apply(apply_model, model, wav, budget)
             except (RuntimeError, MemoryError) as exc:
-                if not _is_out_of_memory(exc):
+                if not is_out_of_memory(exc):
                     raise SeparationUnavailableError(f"Demucs failed: {exc}") from exc
                 _free_memory(torch)
                 if attempt == MAX_ATTEMPTS - 1:

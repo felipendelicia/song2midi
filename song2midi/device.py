@@ -7,9 +7,41 @@ and tune it if separation OOMs on real hardware.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from song2midi.errors import CudaUnavailableError
+
+# Torch words allocation failures differently per device, and matching only
+# "out of memory" made the whole retry path dead code on CPU - the one device
+# that actually needs it. CUDA says "CUDA out of memory"; the CPU allocator
+# says "[enforce fail at alloc_cpu.cpp] DefaultCPUAllocator: can't allocate
+# memory"; other backends have their own phrasings.
+OOM_MARKERS = (
+    "out of memory",
+    "can't allocate memory",
+    "cannot allocate memory",
+    "defaultcpuallocator",
+    "not enough memory",
+    "bad_alloc",
+)
+
+
+def is_out_of_memory(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in OOM_MARKERS)
+
+
+def warn(message: str) -> None:
+    print(f"song2midi: {message}", file=sys.stderr)
+
+
+def release_cuda(torch) -> None:
+    """Give a smaller retry a chance of fitting where the previous one did not."""
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 # segment length in seconds -> peak memory in GB.
 #

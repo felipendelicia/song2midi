@@ -27,6 +27,15 @@ def detect(audio: NDArray[np.float32], sr: int, device: str = "cpu") -> TempoMap
     try:
         return _detect_beat_this(audio, sr, device)
     except Exception as exc:  # missing package, checkpoint download failure, ...
+        # A GPU fault must cost time, not beat quality. librosa gives no
+        # downbeats at all, so bar-level quantisation disappears with it - too
+        # much to lose over an allocation that would have fitted on the CPU.
+        if device != "cpu":
+            _warn(f"beat_this failed on {device} ({exc}); retrying on the CPU")
+            try:
+                return _detect_beat_this(audio, sr, "cpu")
+            except Exception as cpu_exc:
+                exc = cpu_exc
         _warn(f"beat_this unavailable ({exc}); falling back to librosa beat tracking")
         return detect_librosa(audio, sr)
 

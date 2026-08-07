@@ -314,6 +314,30 @@ if ($LASTEXITCODE -eq 3) {
     Write-Ok 'present'
 }
 
+# An NVIDIA GPU turns separation from minutes into seconds, so it is worth
+# detecting rather than leaving the user to find the flag in the README. The
+# CUDA wheels are ~2.4 GB against ~120 MB, so this must never be silent.
+$gpuName = $null
+if (Get-Command nvidia-smi -CommandType Application -ErrorAction SilentlyContinue) {
+    $gpuName = (& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0) { $gpuName = $null }
+}
+
+$syncArgs = @('sync', '--locked')
+if ($gpuName) {
+    Write-Step "NVIDIA GPU detected: $($gpuName.Trim())"
+    Write-Host '    The CUDA build of torch is a ~2.4 GB download against ~120 MB for the' -ForegroundColor Gray
+    Write-Host '    CPU one, and it makes separation many times faster.' -ForegroundColor Gray
+    $answer = Read-Host '    Install the CUDA build? [y/N]'
+    if ($answer -match '^[yY]') {
+        $syncArgs = @('sync', '--locked', '--no-group', 'cpu', '--group', 'cu126')
+        Write-Ok 'using the cu126 wheels'
+        Write-Warn 'Remember: a plain `uv sync` reverts to CPU. Use `uv run --no-sync`.'
+    } else {
+        Write-Ok 'using the CPU build'
+    }
+}
+
 Write-Step 'Creating the locked environment (~350 MB of wheels; ~1 GB on disk once unpacked)'
 Write-Host '    Expect 5-20 minutes depending on the connection. torch alone is a ~200 MB' -ForegroundColor Gray
 Write-Host '    download. A heartbeat prints every 10 seconds; as long as it keeps' -ForegroundColor Gray
@@ -321,7 +345,7 @@ Write-Host '    printing, the install is alive.' -ForegroundColor Gray
 # --locked fails rather than re-resolving, so the environment matches the
 # lockfile that CI builds from.
 $sitePackages = Join-Path $repo '.venv\Lib\site-packages'
-$code = Invoke-WithHeartbeat -Exe 'uv' -ArgumentList @('sync', '--locked') -WatchDir $sitePackages
+$code = Invoke-WithHeartbeat -Exe 'uv' -ArgumentList $syncArgs -WatchDir $sitePackages
 if ($code -ne 0) {
     Write-Warn '"No interpreter found for Python 3.11" or a download error means there is'
     Write-Warn 'no Python 3.11 on this machine and uv could not fetch one: install Python'

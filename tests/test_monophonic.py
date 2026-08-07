@@ -227,3 +227,86 @@ def test_pyin_keeps_a_very_quiet_real_note():
         np.stack([mono, mono]), sr
     )
     assert notes
+
+
+# --------------------------------------------------------------------------
+# crepe out-of-memory ladder
+# --------------------------------------------------------------------------
+
+
+class _FakeTorchcrepe:
+    """Raises CUDA OOM until the batch is small enough, then succeeds."""
+
+    def __init__(self, succeeds_at):
+        self.succeeds_at = succeeds_at
+        self.calls = []
+
+    def predict(self, tensor, sr, *, batch_size, device, **kwargs):
+        import torch
+
+        self.calls.append((device, batch_size))
+        if device == "cuda" and batch_size > self.succeeds_at:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        frames = 40
+        return (
+            torch.full((1, frames), 220.0),
+            torch.full((1, frames), 0.9),
+        )
+
+
+def _run_crepe_with(monkeypatch, fake):
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "torchcrepe", fake)
+    audio = np.stack([np.sin(2 * np.pi * 220 * np.arange(16000) / 16000)] * 2)
+    transcriber = MonophonicTranscriber(
+        fmin=80.0, fmax=1100.0, backend="crepe", device="cuda"
+    )
+    transcriber.transcribe(audio.astype(np.float32), 16000)
+    return fake.calls
+
+
+@pytest.mark.slow
+def test_crepe_halves_the_batch_on_gpu_oom(monkeypatch):
+    """crepe is the largest single allocation in the pipeline and had no
+    recovery at all: a GPU that ran out here killed a run that had already
+    paid for separation."""
+    from song2midi.transcription.monophonic import CREPE_BATCH_SIZE
+
+    calls = _run_crepe_with(monkeypatch, _FakeTorchcrepe(succeeds_at=128))
+
+    assert calls[0] == ("cuda", CREPE_BATCH_SIZE)
+    assert [b for _, b in calls] == [512, 256, 128]
+    assert all(d == "cuda" for d, _ in calls)
+
+
+@pytest.mark.slow
+def test_crepe_falls_back_to_the_cpu_when_no_batch_fits(monkeypatch):
+    from song2midi.transcription.monophonic import (
+        CREPE_BATCH_SIZE,
+        MIN_CREPE_BATCH_SIZE,
+    )
+
+    calls = _run_crepe_with(monkeypatch, _FakeTorchcrepe(succeeds_at=0))
+
+    assert calls[-1] == ("cpu", CREPE_BATCH_SIZE)
+    assert min(b for d, b in calls if d == "cuda") == MIN_CREPE_BATCH_SIZE
+
+
+@pytest.mark.slow
+def test_a_non_memory_error_is_not_retried(monkeypatch):
+    class Exploding:
+        def predict(self, *args, **kwargs):
+            raise RuntimeError("Expected 2D tensor, got 3D")
+
+    import sys as _sys
+
+    monkeypatch.setitem(_sys.modules, "torchcrepe", Exploding())
+    audio = np.stack([np.sin(2 * np.pi * 220 * np.arange(16000) / 16000)] * 2).astype(
+        np.float32
+    )
+    transcriber = MonophonicTranscriber(
+        fmin=80.0, fmax=1100.0, backend="crepe", device="cuda"
+    )
+    with pytest.raises(RuntimeError, match="Expected 2D tensor"):
+        transcriber.transcribe(audio, 16000)

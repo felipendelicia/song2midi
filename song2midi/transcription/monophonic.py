@@ -29,6 +29,20 @@ PYIN_PERIODS_PER_FRAME = 2
 PYIN_CONFIDENCE_THRESHOLD = 0.05
 CREPE_CONFIDENCE_THRESHOLD = 0.5
 
+# torchcrepe frames per forward pass. The same value on every device on purpose:
+# torchcrepe.predict runs its Viterbi decoder once per batch, so the batch size
+# is not a pure memory knob - dropping 512 to 128 moves individual f0 estimates
+# by ~30 cents, enough to flip a borderline note by a semitone. The note cache
+# is keyed by stem and transcriber, not by device, so a CPU run and a CUDA run
+# have to agree. It only ever changes on out-of-memory, where the alternative
+# is no notes at all.
+#
+# Cost, measured as peak process RSS: 512 frames = +1.45 GB, 256 = +0.78 GB, on
+# top of 85 MB of weights. That makes crepe - not Demucs - the largest single
+# allocation in the whole pipeline.
+CREPE_BATCH_SIZE = 512
+MIN_CREPE_BATCH_SIZE = 64
+
 
 def pyin_frame_length(fmin: float, sr: int) -> int:
     """Frame length that fits at least two periods of `fmin`.
@@ -220,22 +234,45 @@ class MonophonicTranscriber:
         import torch
         import torchcrepe
 
+        from song2midi.device import is_out_of_memory, release_cuda, warn
+
         target_sr = 16000
         if sr != target_sr:
             mono = librosa.resample(mono, orig_sr=sr, target_sr=target_sr)
         hop_length = 160  # 10 ms at 16 kHz
         tensor = torch.from_numpy(np.ascontiguousarray(mono, dtype=np.float32))[None]
-        pitch, periodicity = torchcrepe.predict(
-            tensor,
-            target_sr,
-            hop_length=hop_length,
-            fmin=self.fmin,
-            fmax=self.fmax,
-            model="full",
-            batch_size=512,
-            device=self.device,
-            return_periodicity=True,
-        )
+
+        # Demucs has had a retry ladder from the start; crepe is the larger
+        # allocation and had none, so a GPU that ran out here killed a run that
+        # had already paid for separation.
+        device, batch_size = self.device, CREPE_BATCH_SIZE
+        while True:
+            try:
+                pitch, periodicity = torchcrepe.predict(
+                    tensor,
+                    target_sr,
+                    hop_length=hop_length,
+                    fmin=self.fmin,
+                    fmax=self.fmax,
+                    model="full",
+                    batch_size=batch_size,
+                    device=device,
+                    return_periodicity=True,
+                )
+                break
+            except (RuntimeError, MemoryError) as exc:
+                if device == "cpu" or not is_out_of_memory(exc):
+                    raise
+                release_cuda(torch)
+                if batch_size > MIN_CREPE_BATCH_SIZE:
+                    batch_size //= 2
+                    warn(
+                        f"crepe ran out of GPU memory; retrying with "
+                        f"batch_size={batch_size}"
+                    )
+                else:
+                    device, batch_size = "cpu", CREPE_BATCH_SIZE
+                    warn("crepe ran out of GPU memory; pitch-tracking on the CPU")
         f0 = pitch[0].cpu().numpy()
         confidence = periodicity[0].cpu().numpy()
         times = np.arange(len(f0)) * hop_length / target_sr
