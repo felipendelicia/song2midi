@@ -40,7 +40,12 @@ def build_transcriber(key: str, budget: DeviceBudget | None = None) -> Transcrib
     if key == "polyphonic":
         from song2midi.transcription.polyphonic import PolyphonicTranscriber
 
-        return PolyphonicTranscriber()
+        # Basic Pitch's defaults re-onset held notes: at 0.5 / 100 ms the
+        # `other` stem of a 4-minute song came back with 2133 notes. 0.7 /
+        # 200 ms cuts that sharply while sounding time holds - it consolidates
+        # duplicate onsets rather than deleting content. 100 ms was below
+        # basic-pitch's own default of 127.7 ms in the first place.
+        return PolyphonicTranscriber(onset_threshold=0.7, minimum_note_length_ms=200.0)
     if key == "vocals":
         from song2midi.transcription.monophonic import MonophonicTranscriber
 

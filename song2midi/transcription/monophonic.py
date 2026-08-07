@@ -14,13 +14,20 @@ from numpy.typing import NDArray
 
 from song2midi.audio.io import to_mono
 from song2midi.midi.model import Note
-from song2midi.transcription.base import sort_notes
+from song2midi.transcription.base import sort_notes, velocity_from_energy
 
 A4_HZ = 440.0
 A4_MIDI = 69
 DEFAULT_FRAME_STEP = 0.01
 MIN_PYIN_FRAME_LENGTH = 2048
 PYIN_PERIODS_PER_FRAME = 2
+
+# Voicing thresholds belong to the tracker, not the stem. pyin's voiced_prob is
+# the YIN trough mass on voiced pitch bins, on a scale nothing like crepe's
+# periodicity: a real bass note sits at 0.24-0.49 while band-limited noise sits
+# at 0.010, so 0.5 would discard everything.
+PYIN_CONFIDENCE_THRESHOLD = 0.05
+CREPE_CONFIDENCE_THRESHOLD = 0.5
 
 
 def pyin_frame_length(fmin: float, sr: int) -> int:
@@ -76,18 +83,17 @@ def notes_from_f0(
     frame_step = (
         float(np.median(np.diff(times))) if times.size > 1 else DEFAULT_FRAME_STEP
     )
-    peak_rms = float(np.max(rms)) if rms.size and np.max(rms) > 0 else 1.0
     max_gap_frames = int(round(max_gap / frame_step))
 
-    notes: list[Note] = []
+    segments: list[tuple[float, float, int, float]] = []
     start_index: int | None = None
     current_pitch: float | None = None
     gap_frames = 0
 
     def emit(end_index: int) -> None:
         _emit(
-            notes, start_index, end_index, current_pitch,
-            times, rms, peak_rms, frame_step, min_duration,
+            segments, start_index, end_index, current_pitch,
+            times, rms, frame_step, min_duration,
         )
 
     for index, pitch in enumerate(pitches):
@@ -95,7 +101,7 @@ def notes_from_f0(
             if start_index is not None:
                 gap_frames += 1
                 if gap_frames > max_gap_frames:
-                    emit(index - gap_frames)
+                    emit(index - gap_frames + 1)
                     start_index, current_pitch, gap_frames = None, None, 0
             continue
 
@@ -110,36 +116,34 @@ def notes_from_f0(
     if start_index is not None:
         emit(len(pitches) - gap_frames)
 
+    # Velocity is a second pass: the reference percentile needs the whole track.
+    velocities = velocity_from_energy([energy for *_, energy in segments])
+    notes = [
+        Note(start=start, end=end, pitch=pitch, velocity=int(velocity))
+        for (start, end, pitch, _), velocity in zip(segments, velocities)
+    ]
     return sort_notes(notes)
 
 
 def _emit(
-    notes: list[Note],
+    segments: list[tuple[float, float, int, float]],
     start_index: int | None,
     end_index: int,
     pitch: float | None,
     times: NDArray,
     rms: NDArray,
-    peak_rms: float,
     frame_step: float,
     min_duration: float,
 ) -> None:
     if pitch is None or start_index is None or end_index <= start_index:
         return
     start = float(times[start_index])
-    end = float(times[min(end_index, len(times) - 1)]) + frame_step
+    end = float(times[min(end_index - 1, len(times) - 1)]) + frame_step
     if end - start < min_duration:
         return
-    segment = rms[start_index:end_index]
-    loudness = float(np.mean(segment)) / peak_rms if segment.size else 0.5
-    notes.append(
-        Note(
-            start=start,
-            end=end,
-            pitch=int(np.clip(pitch, 0, 127)),
-            velocity=int(np.clip(round(loudness * 127), 1, 127)),
-        )
-    )
+    window = rms[start_index:end_index]
+    energy = float(np.mean(window)) if window.size else 0.0
+    segments.append((start, end, int(np.clip(pitch, 0, 127)), energy))
 
 
 def _median_filter(values: NDArray, size: int) -> NDArray:
@@ -173,7 +177,11 @@ class MonophonicTranscriber:
         self.fmax = fmax
         self.backend = backend
         self.device = device
-        self.segmentation_kwargs = segmentation_kwargs
+        self.segmentation_kwargs = dict(segmentation_kwargs)
+        self.segmentation_kwargs.setdefault(
+            "confidence_threshold",
+            CREPE_CONFIDENCE_THRESHOLD if backend == "crepe" else PYIN_CONFIDENCE_THRESHOLD,
+        )
 
     def transcribe(self, audio: NDArray[np.float32], sr: int) -> list[Note]:
         mono = to_mono(audio)
@@ -190,7 +198,7 @@ class MonophonicTranscriber:
         import librosa
 
         hop_length = 256
-        f0, voiced_flag, _ = librosa.pyin(
+        f0, _, voiced_prob = librosa.pyin(
             y=mono,
             fmin=self.fmin,
             fmax=self.fmax,
@@ -199,12 +207,13 @@ class MonophonicTranscriber:
             hop_length=hop_length,
         )
         times = librosa.times_like(f0, sr=sr, hop_length=hop_length)
-        # pyin's `voiced_prob` is an HMM posterior, not a confidence on crepe's
-        # scale — it peaks around 0.28 even on a clean synthetic tone, so
-        # comparing it to a 0.5 threshold discards everything. `voiced_flag` is
-        # pyin's own voicing decision, already thresholded; use that.
-        confidence = np.where(np.nan_to_num(voiced_flag, nan=0.0) > 0, 1.0, 0.0)
-        return np.nan_to_num(f0), times, confidence
+        # librosa already NaNs f0 wherever its own voicing decision is False,
+        # and notes_from_f0's isfinite(midi) term re-applies that, so gating on
+        # voiced_prob can only tighten pyin's decision, never loosen it. That
+        # gate is what rejects the aperiodic bleed which put a G4 on a bass
+        # track. Its scale is nothing like crepe's, hence the separate default
+        # in PYIN_CONFIDENCE_THRESHOLD.
+        return np.nan_to_num(f0), times, np.nan_to_num(voiced_prob)
 
     def _track_crepe(self, mono, sr):
         import librosa

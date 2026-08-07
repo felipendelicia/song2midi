@@ -104,18 +104,29 @@ def test_notes_shorter_than_the_minimum_are_dropped():
     assert 72 not in [n.pitch for n in notes]
 
 
-def test_velocity_tracks_loudness():
-    count = 100
-    loud = notes_from_f0(
-        constant_f0(60, count), frames(count), np.ones(count), np.full(count, 1.0)
-    )
-    quiet = notes_from_f0(
-        constant_f0(60, count),
-        frames(count),
-        np.ones(count),
-        np.concatenate([np.full(count - 1, 0.1), [1.0]]),
-    )
-    assert loud[0].velocity > quiet[0].velocity
+def test_velocity_tracks_loudness_within_a_track():
+    """Dynamics are relative within a track: the reference is the track's own
+    95th percentile, so a quiet note next to loud ones reads as quiet."""
+    count = 240
+    f0 = np.concatenate([constant_f0(p, 60) for p in (60, 62, 64, 65)])
+    rms = np.concatenate([np.full(60, level) for level in (1.0, 0.5, 0.2, 0.05)])
+    notes = notes_from_f0(f0, frames(count), np.ones(count), rms)
+
+    assert len(notes) == 4
+    velocities = [n.velocity for n in notes]
+    assert velocities == sorted(velocities, reverse=True), velocities
+    assert velocities[0] > velocities[-1]
+
+
+def test_no_note_is_inaudible():
+    """Bass and drums used to render at velocity 1 - silent in a DAW. The
+    linear amplitude/peak map put everything but the loudest note near zero."""
+    count = 240
+    f0 = np.concatenate([constant_f0(p, 60) for p in (60, 62, 64, 65)])
+    rms = np.concatenate([np.full(60, level) for level in (1.0, 0.5, 0.2, 0.05)])
+    notes = notes_from_f0(f0, frames(count), np.ones(count), rms)
+
+    assert min(n.velocity for n in notes) >= 20
 
 
 def test_all_unvoiced_yields_no_notes():
@@ -146,3 +157,73 @@ def test_pyin_backend_finds_a_sine():
 def test_silence_yields_no_notes():
     audio = np.zeros((2, 22050), dtype=np.float32)
     assert MonophonicTranscriber(fmin=60.0, fmax=400.0).transcribe(audio, 22050) == []
+
+
+def test_consecutive_notes_never_overlap():
+    """A legato pitch change used to end note k a whole frame after note k+1
+    started, and only --quantize repaired it."""
+    f0 = np.concatenate([constant_f0(57, 100), constant_f0(59, 100)])
+    notes = notes_from_f0(f0, frames(200), np.ones(200), np.full(200, 0.5))
+    assert all(a.end <= b.start for a, b in zip(notes, notes[1:]))
+
+
+def test_a_gap_closed_note_does_not_overlap_the_next():
+    f0 = np.concatenate([constant_f0(60, 60), constant_f0(64, 60)])
+    confidence = np.ones(120)
+    confidence[55:60] = 0.0
+    notes = notes_from_f0(f0, frames(120), confidence, np.full(120, 0.5))
+    assert all(a.end <= b.start for a, b in zip(notes, notes[1:]))
+
+
+def test_backend_picks_its_own_confidence_default():
+    """pyin's voiced_prob and crepe's periodicity are different scales; a
+    single threshold discards everything on one of them."""
+    from song2midi.transcription.monophonic import (
+        CREPE_CONFIDENCE_THRESHOLD,
+        PYIN_CONFIDENCE_THRESHOLD,
+    )
+
+    pyin = MonophonicTranscriber(fmin=30.0, fmax=400.0, backend="pyin")
+    crepe = MonophonicTranscriber(fmin=80.0, fmax=1100.0, backend="crepe")
+    assert pyin.segmentation_kwargs["confidence_threshold"] == PYIN_CONFIDENCE_THRESHOLD
+    assert crepe.segmentation_kwargs["confidence_threshold"] == CREPE_CONFIDENCE_THRESHOLD
+    assert PYIN_CONFIDENCE_THRESHOLD < CREPE_CONFIDENCE_THRESHOLD
+
+
+def test_an_explicit_threshold_still_wins():
+    transcriber = MonophonicTranscriber(
+        fmin=30.0, fmax=400.0, backend="pyin", confidence_threshold=0.9
+    )
+    assert transcriber.segmentation_kwargs["confidence_threshold"] == 0.9
+
+
+@pytest.mark.slow
+def test_pyin_rejects_aperiodic_noise():
+    """Band-limited noise in the bass register is bleed, not a bass note. This
+    is what put a G4 on the bass track of a real song."""
+    import scipy.signal as signal
+
+    sr = 44100
+    noise = np.random.default_rng(0).standard_normal(sr * 3)
+    b, a = signal.butter(4, [30 / (sr / 2), 400 / (sr / 2)], btype="band")
+    filtered = signal.lfilter(b, a, noise)
+    filtered = (filtered / np.max(np.abs(filtered))).astype(np.float32)
+
+    notes = MonophonicTranscriber(fmin=30.0, fmax=400.0, backend="pyin").transcribe(
+        np.stack([filtered, filtered]), sr
+    )
+    assert notes == []
+
+
+@pytest.mark.slow
+def test_pyin_keeps_a_very_quiet_real_note():
+    """voiced_prob gates aperiodicity, not level, so soft playing survives."""
+    sr = 44100
+    t = np.arange(sr * 2) / sr
+    mono = (
+        0.003 * sum(np.sin(2 * np.pi * 55.0 * h * t) / h for h in (1, 2, 3))
+    ).astype(np.float32)
+    notes = MonophonicTranscriber(fmin=30.0, fmax=400.0, backend="pyin").transcribe(
+        np.stack([mono, mono]), sr
+    )
+    assert notes

@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 from song2midi.audio.io import to_mono
 from song2midi.midi.model import Note
-from song2midi.transcription.base import sort_notes
+from song2midi.transcription.base import sort_notes, velocity_from_energy
 
 GM_KICK = 36
 GM_SNARE = 38
@@ -103,10 +103,9 @@ class DrumTranscriber:
         if len(onsets) == 0:
             return []
 
-        peak = float(np.max(np.abs(mono))) or 1.0
         freqs = np.fft.rfftfreq(N_FFT, d=1.0 / sr)
 
-        notes = []
+        hits: list[tuple[float, int, float]] = []
         for onset in onsets:
             attack = _window(mono, sr, onset, onset + ATTACK_WINDOW)
             if attack.size < MIN_ATTACK_SAMPLES:
@@ -116,14 +115,23 @@ class DrumTranscriber:
             attack_rms = _rms(attack)
             decay_ratio = _rms(tail) / (attack_rms or 1.0)
 
-            notes.append(
-                Note(
-                    start=float(onset),
-                    end=float(onset) + NOTE_DURATION,
-                    pitch=classify_onset(spectrum, freqs, decay_ratio),
-                    velocity=int(np.clip(round(attack_rms / peak * 127 * 2), 1, 127)),
-                )
+            hits.append(
+                (float(onset), classify_onset(spectrum, freqs, decay_ratio), attack_rms)
             )
+
+        # Velocity in a second pass, from a track-wide percentile reference:
+        # dividing each hit by the single loudest sample rendered the whole kit
+        # at velocity 1, which is silence in a DAW.
+        velocities = velocity_from_energy([energy for *_, energy in hits])
+        notes = [
+            Note(
+                start=onset,
+                end=onset + NOTE_DURATION,
+                pitch=pitch,
+                velocity=int(velocity),
+            )
+            for (onset, pitch, _), velocity in zip(hits, velocities)
+        ]
         return sort_notes(notes)
 
 
