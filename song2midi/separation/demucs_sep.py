@@ -111,6 +111,20 @@ class DemucsSeparator:
         raise SeparationUnavailableError("Demucs ran out of memory on every attempt")
 
     def _apply(self, apply_model, model, wav, budget: DeviceBudget):
+        # BOTH, and the model attribute is the one that matters.
+        #
+        # apply_model's `segment` only decides how the mix is sliced. Inside
+        # HTDemucs.forward, `use_train_segment` pads every chunk shorter than
+        # `model.segment * samplerate` straight back up to it, so slicing alone
+        # changes nothing. Measured peak RSS on a 30 s mix, passing segment to
+        # apply_model only: 1121 MB at 7.8 s, 1142 MB at 4.0 s, 1171 MB at
+        # 2.0 s - flat, and slightly worse for the extra chunks. Setting
+        # model.segment as well: 1129 / 844 / 672 MB.
+        #
+        # Without this the whole memory budget in device.py is inert, and the
+        # out-of-memory ladder in _apply_with_retries retries with exactly the
+        # memory that just failed.
+        _set_segment(model, budget.segment_seconds)
         kwargs = {
             "device": budget.device,
             "overlap": 0.25,
@@ -121,13 +135,20 @@ class DemucsSeparator:
             # output path.
             "progress": sys.stderr.isatty(),
         }
-        # `segment` moved between apply_model and the model itself across demucs
-        # releases; support both rather than pinning a patch version.
         if "segment" in inspect.signature(apply_model).parameters:
             kwargs["segment"] = budget.segment_seconds
-        else:
-            model.segment = budget.segment_seconds
         return apply_model(model, wav, **kwargs)
+
+
+def _set_segment(model, seconds: float) -> None:
+    """Set the padding target on the model, not just the slicing width.
+
+    A pretrained htdemucs is a BagOfModels wrapping the real networks, and the
+    attribute that drives the padding lives on each inner model.
+    """
+    for target in getattr(model, "models", [model]):
+        if hasattr(target, "segment"):
+            target.segment = seconds
 
 
 def build_separator(separate: bool, budget: DeviceBudget) -> Separator:

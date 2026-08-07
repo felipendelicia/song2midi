@@ -11,12 +11,25 @@ from dataclasses import dataclass
 
 from song2midi.errors import CudaUnavailableError
 
-# segment length in seconds -> peak memory in GB
+# segment length in seconds -> peak memory in GB.
+#
+# CPU figures are measured: peak RSS separating a 4-minute mix on this
+# project's locked torch, with model.segment actually set (before that fix the
+# knob did nothing and every segment cost the same). The earlier guesses here
+# were 4x too high, so a machine with 4.5 GB free was pushed to the smallest
+# segment when the largest fits comfortably.
+#
+# Note the curve is shallow, not linear: a fixed cost dominates - the weights
+# plus the full-length output tensor, which grows with the song rather than
+# with the segment. Halving the segment buys much less than it looks like it
+# should.
+#
+# CUDA figures are the CPU ones minus the output tensor, which lives in system
+# RAM either way, and are the least trustworthy numbers in this file: they have
+# not been measured on real hardware. They are deliberately conservative.
 SEGMENT_COST_GB: dict[str, dict[float, float]] = {
-    "cuda": {7.8: 3.0, 6.0: 2.4, 5.0: 2.0, 4.0: 1.5},
-    # CPU inference keeps activations in float32 without the kernel fusion CUDA
-    # gets, so the same segment costs roughly twice as much RAM.
-    "cpu": {7.8: 6.0, 6.0: 4.6, 5.0: 3.9, 4.0: 3.0},
+    "cuda": {7.8: 1.2, 6.0: 1.0, 5.0: 0.9, 4.0: 0.8},
+    "cpu": {7.8: 1.6, 6.0: 1.4, 5.0: 1.35, 4.0: 1.3},
 }
 
 SAFETY_MARGIN = 0.8
